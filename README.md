@@ -1,4 +1,4 @@
-# DevOps Hub for Bluescope
+# DevOps Hub for DevOps Audit 
 
 A React + TypeScript Azure DevOps extension for tracking team activity and detecting anomalies across commits, pull requests, and work items.
 
