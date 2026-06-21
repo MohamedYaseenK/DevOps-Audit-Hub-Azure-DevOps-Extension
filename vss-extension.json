@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "devops-hub-for-bluescope",
   "name": "DevOps Hub for Bluescope",
-  "version": "1.0.2",
+  "version": "1.0.5",
   "publisher": "MohamedYaseen",
   "description": "Developer productivity monitoring hub for Azure DevOps — tracks work items, commits, PRs and detects anomalies.",
   "categories": ["Azure Boards"],
@@ -15,17 +15,17 @@
     "default": "images/icon.png"
   },
   "contributions": [
-    {
-      "id": "devops-hub-for-bluescope",
-      "type": "ms.vss-web.hub",
-      "targets": ["ms.vss-web.project-hub-group"],
-      "properties": {
-        "name": "DevOps Hub for Bluescope",
-        "order": 100,
-        "uri": "dist/index.html"
-      }
+  {
+    "id": "devops-hub-for-bluescope",
+    "type": "ms.vss-web.hub",
+    "targets": ["ms.vss-work-web.work-hub-group"],
+    "properties": {
+      "name": "DevOps Hub for Bluescope",
+      "order": 100,
+      "uri": "dist/index.html"
     }
-  ],
+  }
+],
   "files": [
     {
       "path": "dist",
@@ -37,9 +37,9 @@
     }
   ],
   "scopes": [
-    "vso.work",
+    "vso.project",
     "vso.code",
-    "vso.build"
+    "vso.work"
   ]
 }
 
