@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { Developer, Commit, PullRequest, WorkItem, AnomalyResult } from '../types'
-import { fetchCommits, fetchPullRequests, fetchWorkItems } from '../api/adoApi'
+import type { Developer, AnomalyResult } from '../types'
+import { fetchContributorDetail } from '../api/adoApi'
 import { detectAnomalies } from '../anomaly/detector'
 import AnomalyBadge from './AnomalyBadge'
 import {
@@ -13,35 +13,35 @@ interface Props {
   dateRange: 'today' | 'week' | 'month'
 }
 
+interface DetailCommit  { commitId: string, comment: string, date: string }
+interface DetailPr      { pullRequestId: number, title: string, status: any, creationDate: string }
+interface DetailWorkItem{ id: number, title: string, state: string, effort: number }
+
 export default function DeveloperView({ developer, dateRange }: Props) {
-  const [commits,   setCommits]   = useState<Commit[]>([])
-  const [prs,       setPrs]       = useState<PullRequest[]>([])
-  const [workItems, setWorkItems] = useState<WorkItem[]>([])
+  const [commits,   setCommits]   = useState<DetailCommit[]>([])
+  const [prs,       setPrs]       = useState<DetailPr[]>([])
+  const [workItems, setWorkItems] = useState<DetailWorkItem[]>([])
   const [anomaly,   setAnomaly]   = useState<AnomalyResult | null>(null)
   const [loading,   setLoading]   = useState(true)
   const [error,     setError]     = useState<string | null>(null)
 
   useEffect(() => {
     loadData()
-  }, [developer.email, dateRange])
+  }, [developer.id, dateRange])
 
   async function loadData() {
     setLoading(true)
     setError(null)
 
     try {
-      const [c, p, w] = await Promise.all([
-        fetchCommits(developer.email, dateRange),
-        fetchPullRequests(developer.email, dateRange),
-        fetchWorkItems(developer.email, dateRange),
-      ])
+      const detail = await fetchContributorDetail(developer.id, dateRange)
 
-      setCommits(c)
-      setPrs(p)
-      setWorkItems(w)
+      setCommits(detail.commits)
+      setPrs(detail.prs)
+      setWorkItems(detail.workItems)
 
-      const effort  = w.reduce((sum, wi) => sum + (wi.effort || 0), 0)
-      setAnomaly(detectAnomalies(effort, c.length, p.length, w.length, dateRange))
+      const effort = detail.workItems.reduce((sum: number, wi: DetailWorkItem) => sum + (wi.effort || 0), 0)
+      setAnomaly(detectAnomalies(effort, detail.commits.length, detail.prs.length, detail.workItems.length, dateRange))
 
     } catch (err) {
       setError('Failed to load developer data.')
@@ -50,7 +50,6 @@ export default function DeveloperView({ developer, dateRange }: Props) {
     }
   }
 
-  // Build chart data — commits grouped by date
   function buildChartData() {
     const grouped: Record<string, number> = {}
     commits.forEach(c => {
@@ -60,8 +59,8 @@ export default function DeveloperView({ developer, dateRange }: Props) {
     return Object.entries(grouped).map(([date, count]) => ({ date, commits: count }))
   }
 
-  const effort     = workItems.reduce((sum, wi) => sum + (wi.effort || 0), 0)
-  const chartData  = buildChartData()
+  const effort    = workItems.reduce((sum: number, wi: DetailWorkItem) => sum + (wi.effort || 0), 0)
+  const chartData = buildChartData()
 
   if (loading) {
     return (
@@ -86,7 +85,6 @@ export default function DeveloperView({ developer, dateRange }: Props) {
   return (
     <div className="space-y-6">
 
-      {/* DEVELOPER HEADER */}
       <div className="bg-white rounded-lg border border-gray-200 p-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -102,7 +100,6 @@ export default function DeveloperView({ developer, dateRange }: Props) {
         </div>
       </div>
 
-      {/* SUMMARY METRICS */}
       <div className="grid grid-cols-4 gap-4">
         <div className="bg-white rounded-lg border border-gray-200 p-4 text-center">
           <p className="text-xs text-gray-500 uppercase tracking-wide">Commits</p>
@@ -131,7 +128,6 @@ export default function DeveloperView({ developer, dateRange }: Props) {
         </div>
       </div>
 
-      {/* COMMIT CHART */}
       {chartData.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 p-5">
           <h3 className="text-sm font-semibold text-gray-700 mb-4">Commit Activity</h3>
@@ -147,7 +143,6 @@ export default function DeveloperView({ developer, dateRange }: Props) {
         </div>
       )}
 
-      {/* WORK ITEMS */}
       {workItems.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100">
@@ -185,7 +180,6 @@ export default function DeveloperView({ developer, dateRange }: Props) {
         </div>
       )}
 
-      {/* RECENT COMMITS */}
       {commits.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100">
@@ -204,7 +198,6 @@ export default function DeveloperView({ developer, dateRange }: Props) {
         </div>
       )}
 
-      {/* PULL REQUESTS */}
       {prs.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100">
@@ -214,12 +207,7 @@ export default function DeveloperView({ developer, dateRange }: Props) {
             {prs.map(pr => (
               <div key={pr.pullRequestId} className="px-4 py-3 flex items-center justify-between">
                 <p className="text-sm text-gray-800">{pr.title}</p>
-                <span className={`text-xs px-2 py-1 rounded-full font-medium
-                  ${pr.status === 'completed'
-                    ? 'bg-green-100 text-green-700'
-                    : pr.status === 'active'
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'bg-gray-100 text-gray-600'}`}>
+                <span className="text-xs px-2 py-1 rounded-full font-medium bg-gray-100 text-gray-600">
                   {pr.status}
                 </span>
               </div>

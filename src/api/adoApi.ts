@@ -3,24 +3,44 @@ import { getClient } from "azure-devops-extension-api"
 import { CoreRestClient } from "azure-devops-extension-api/Core"
 import { GitRestClient } from "azure-devops-extension-api/Git"
 import { WorkItemTrackingRestClient } from "azure-devops-extension-api/WorkItemTracking"
-import type { WorkItem, Commit, PullRequest } from '../types'
 
 // ─────────────────────────────────────────────
-// Context helpers
+// Types
 // ─────────────────────────────────────────────
 
-// Returns { id, name, uri } for the current project
+export interface Contributor {
+  key:          string          // normalized identity key — lowercase email
+  displayName:  string
+  email:        string
+  isTeamMember: boolean         // true if found on any formal Team object
+  commits:      number
+  prs:          number
+  workItems:    number
+  effortHours:  number
+}
+
+// ─────────────────────────────────────────────
+// Identity normalization
+// ─────────────────────────────────────────────
+
+// Commits, PRs, and Work Items each return identity in slightly
+// different shapes. This collapses all of them into one comparable key.
+function normalizeIdentity(raw: string | undefined | null): string {
+  if (!raw) return ''
+  // Strip domain-style logins (DOMAIN\username → username)
+  const stripped = raw.includes('\\') ? raw.split('\\')[1] : raw
+  return stripped.trim().toLowerCase()
+}
+
+// ─────────────────────────────────────────────
+// Context + date helpers
+// ─────────────────────────────────────────────
+
 export async function getCurrentProject() {
   await SDK.ready()
   return SDK.getWebContext().project
 }
 
-// ─────────────────────────────────────────────
-// Date filtering
-// ─────────────────────────────────────────────
-
-// Build a full ISO datetime string based on range
-// (used by Git APIs, which accept full timestamps)
 export function buildDateFilter(range: 'today' | 'week' | 'month'): string {
   const now   = new Date()
   const start = new Date()
@@ -36,153 +56,323 @@ export function buildDateFilter(range: 'today' | 'week' | 'month'): string {
   return start.toISOString()
 }
 
-// Build a date-ONLY string (YYYY-MM-DD) for WIQL queries
-// WIQL date-precision comparisons reject any time component
 function buildWiqlDateFilter(range: 'today' | 'week' | 'month'): string {
   return buildDateFilter(range).split('T')[0]
 }
 
 // ─────────────────────────────────────────────
-// Team members
+// Step 1 — fetch the formal Team roster
+// Checks ALL teams in the project, not just the first one —
+// ADO often has many auto-generated area-path teams, and the
+// first team in the list is frequently empty.
 // ─────────────────────────────────────────────
 
-export async function fetchTeamMembers() {
+async function fetchTeamRoster(): Promise<Map<string, { displayName: string, email: string }>> {
   await SDK.ready()
+  const context    = SDK.getWebContext()
+  const coreClient = getClient(CoreRestClient)
 
-  const context     = SDK.getWebContext()
-  const coreClient  = getClient(CoreRestClient)
+  const roster = new Map<string, { displayName: string, email: string }>()
 
   const teams = await coreClient.getTeams(context.project.id)
+  console.log('[DEBUG] teams found:', teams.length, teams.map(t => t.name))
 
-  if (!teams.length) {
-    return []
+  if (!teams.length) return roster
+
+  for (const team of teams) {
+    try {
+      const members = await coreClient.getTeamMembersWithExtendedProperties(
+        context.project.id,
+        team.id
+      )
+
+      console.log(`[DEBUG] team "${team.name}" members:`, members.length)
+
+      for (const m of members) {
+        const email = m.identity?.uniqueName || ''
+        const key   = normalizeIdentity(email)
+        if (!key) continue
+
+        roster.set(key, {
+          displayName: m.identity?.displayName || email,
+          email,
+        })
+      }
+    } catch (err) {
+      console.warn(`[DEBUG] could not read members for team "${team.name}":`, err)
+      continue  // some teams may be restricted — skip and keep going
+    }
   }
 
-  const team = teams[0]
-
-  const members = await coreClient.getTeamMembersWithExtendedProperties(
-    context.project.id,
-    team.id
-  )
-
-  return members || []
+  console.log('[DEBUG] total unique roster members across all teams:', roster.size)
+  return roster
 }
 
 // ─────────────────────────────────────────────
-// Commits
+// Step 2 — fetch ALL commits across ALL repos
+// (single pass, not per-developer)
 // ─────────────────────────────────────────────
 
-export async function fetchCommits(
-  email:     string,
-  dateRange: 'today' | 'week' | 'month'
-): Promise<Commit[]> {
+async function fetchAllCommits(dateRange: 'today' | 'week' | 'month') {
   await SDK.ready()
-
-  const context    = SDK.getWebContext()
-  const gitClient  = getClient(GitRestClient)
-  const fromDate   = buildDateFilter(dateRange)
+  const context   = SDK.getWebContext()
+  const gitClient = getClient(GitRestClient)
+  const fromDate  = buildDateFilter(dateRange)
 
   const repos = await gitClient.getRepositories(context.project.id)
+  console.log('[DEBUG] repos found:', repos.length, repos.map(r => r.name))
 
-  const allCommits: Commit[] = []
+  const allCommits: any[] = []
 
   for (const repo of repos) {
-    const commits = await gitClient.getCommits(
-      repo.id,
-      {
-        author:   email,
-        fromDate: fromDate,
-      } as any,
-      context.project.id
-    )
-
-    allCommits.push(
-      ...commits.map((c: any) => ({
-        commitId:    c.commitId,
-        author:      c.author?.name,
-        authorEmail: c.author?.email,
-        comment:     c.comment,
-        date:        c.author?.date,
-      }))
-    )
+    try {
+      const commits = await gitClient.getCommits(
+        repo.id,
+        { fromDate } as any,
+        context.project.id
+      )
+      console.log(`[DEBUG] repo "${repo.name}" commits:`, commits.length)
+      allCommits.push(...commits)
+    } catch (err) {
+      console.warn(`[DEBUG] could not read commits for repo "${repo.name}":`, err)
+      continue  // repo might be empty, disabled, or restricted — skip it
+    }
   }
 
+  console.log('[DEBUG] total commits across all repos:', allCommits.length)
   return allCommits
 }
 
 // ─────────────────────────────────────────────
-// Pull Requests
+// Step 3 — fetch ALL PRs across ALL repos
 // ─────────────────────────────────────────────
 
-export async function fetchPullRequests(
-  email:     string,
-  dateRange: 'today' | 'week' | 'month'
-): Promise<PullRequest[]> {
+async function fetchAllPullRequests(dateRange: 'today' | 'week' | 'month') {
   await SDK.ready()
-
-  const context    = SDK.getWebContext()
-  const gitClient  = getClient(GitRestClient)
-  const fromDate   = new Date(buildDateFilter(dateRange))
+  const context   = SDK.getWebContext()
+  const gitClient = getClient(GitRestClient)
+  const fromDate  = new Date(buildDateFilter(dateRange))
 
   const prs = await gitClient.getPullRequestsByProject(
     context.project.id,
-    { status: 0 } as any // 0 = all statuses
+    { status: 0 } as any  // 0 = all statuses
   )
 
-  return prs
-    .filter((pr: any) => {
-      const createdDate = new Date(pr.creationDate)
-      return pr.createdBy?.uniqueName === email
-          && createdDate >= fromDate
-    })
-    .map((pr: any) => ({
-      pullRequestId: pr.pullRequestId,
-      title:         pr.title,
-      createdBy:     pr.createdBy?.displayName,
-      status:        pr.status,
-      creationDate:  pr.creationDate,
-    }))
+  console.log('[DEBUG] PRs found (all time, before date filter):', prs.length)
+
+  const filtered = prs.filter((pr: any) => new Date(pr.creationDate) >= fromDate)
+  console.log('[DEBUG] PRs after date filter:', filtered.length)
+
+  return filtered
 }
 
 // ─────────────────────────────────────────────
-// Work Items
+// Step 4 — fetch ALL work items changed in range
+// (project-wide, not filtered by assignee)
 // ─────────────────────────────────────────────
 
-export async function fetchWorkItems(
-  email:     string,
-  dateRange: 'today' | 'week' | 'month'
-): Promise<WorkItem[]> {
+async function fetchAllWorkItems(dateRange: 'today' | 'week' | 'month') {
   await SDK.ready()
-
   const context   = SDK.getWebContext()
   const witClient = getClient(WorkItemTrackingRestClient)
   const fromDate  = buildWiqlDateFilter(dateRange)
 
+  // Note: [System.TeamProject] filter intentionally omitted — the
+  // project scope is already enforced by passing context.project.id
+  // into queryByWiql() below. Including it as a text filter was
+  // previously causing all results to be silently filtered out.
   const wiql = {
     query: `SELECT [System.Id], [System.Title], [System.State],
                    [System.AssignedTo], [Microsoft.VSTS.Scheduling.Effort]
             FROM WorkItems
-            WHERE [System.AssignedTo] = '${email}'
-            AND   [System.ChangedDate] >= '${fromDate}'
-            AND   [System.TeamProject] = '${context.project.name}'
+            WHERE [System.ChangedDate] >= '${fromDate}'
             ORDER BY [System.ChangedDate] DESC`
   }
 
   const queryResult = await witClient.queryByWiql(wiql, context.project.id)
   const ids = (queryResult.workItems || []).map(w => w.id)
 
+  console.log('[DEBUG] work item IDs from WIQL query:', ids.length)
+
   if (ids.length === 0) return []
 
-  const items = await witClient.getWorkItems(
-    ids.slice(0, 50),
-    'System.Title,System.State,System.AssignedTo,Microsoft.VSTS.Scheduling.Effort'
-  )
+  // ADO caps batch reads — chunk into groups of 200 to be safe
+  const chunks: number[][] = []
+  for (let i = 0; i < ids.length; i += 200) {
+    chunks.push(ids.slice(i, i + 200))
+  }
 
-  return items.map(item => ({
-    id:         item.id,
-    title:      item.fields['System.Title'],
-    state:      item.fields['System.State'],
-    assignedTo: item.fields['System.AssignedTo']?.displayName || '',
-    effort:     item.fields['Microsoft.VSTS.Scheduling.Effort'] || 0,
-  }))
+  const allItems = []
+  for (const chunk of chunks) {
+    const items = await witClient.getWorkItems(
+      chunk,
+      'System.Title,System.State,System.AssignedTo,Microsoft.VSTS.Scheduling.Effort'
+    )
+    allItems.push(...items)
+  }
+
+  console.log('[DEBUG] work items fully fetched:', allItems.length)
+  return allItems
+}
+
+// ─────────────────────────────────────────────
+// Step 5 — merge everything into one contributor list
+// ─────────────────────────────────────────────
+
+export async function fetchProjectContributors(
+  dateRange: 'today' | 'week' | 'month'
+): Promise<Contributor[]> {
+
+  console.log('═══════════════════════════════════════════')
+  console.log('[DEBUG] fetchProjectContributors starting — dateRange:', dateRange)
+  console.log('═══════════════════════════════════════════')
+
+  const [roster, commits, prs, workItems] = await Promise.all([
+    fetchTeamRoster(),
+    fetchAllCommits(dateRange),
+    fetchAllPullRequests(dateRange),
+    fetchAllWorkItems(dateRange),
+  ])
+
+  console.log('───────────────────────────────────────────')
+  console.log('[DEBUG] SUMMARY')
+  console.log('[DEBUG] roster size:    ', roster.size)
+  console.log('[DEBUG] commits count:  ', commits.length)
+  console.log('[DEBUG] prs count:      ', prs.length)
+  console.log('[DEBUG] workItems count:', workItems.length)
+  console.log('[DEBUG] sample commit:  ', commits[0])
+  console.log('[DEBUG] sample pr:      ', prs[0])
+  console.log('───────────────────────────────────────────')
+
+  // Master map — starts with the team roster, gets enriched with activity
+  const contributors = new Map<string, Contributor>()
+
+  // Seed with formal team members first
+  for (const [key, info] of roster) {
+    contributors.set(key, {
+      key,
+      displayName:  info.displayName,
+      email:        info.email,
+      isTeamMember: true,
+      commits:      0,
+      prs:          0,
+      workItems:    0,
+      effortHours:  0,
+    })
+  }
+
+  // Fold in commits
+  for (const c of commits) {
+    const email = c.author?.email || ''
+    const name  = c.author?.name  || email
+    const key   = normalizeIdentity(email || name)
+    if (!key) continue
+
+    if (!contributors.has(key)) {
+      contributors.set(key, {
+        key, displayName: name, email,
+        isTeamMember: false,
+        commits: 0, prs: 0, workItems: 0, effortHours: 0,
+      })
+    }
+    contributors.get(key)!.commits += 1
+  }
+
+  // Fold in PRs
+  for (const pr of prs as any[]) {
+    const email = pr.createdBy?.uniqueName   || ''
+    const name  = pr.createdBy?.displayName  || email
+    const key   = normalizeIdentity(email || name)
+    if (!key) continue
+
+    if (!contributors.has(key)) {
+      contributors.set(key, {
+        key, displayName: name, email,
+        isTeamMember: false,
+        commits: 0, prs: 0, workItems: 0, effortHours: 0,
+      })
+    }
+    contributors.get(key)!.prs += 1
+  }
+
+  // Fold in work items + effort
+  for (const item of workItems as any[]) {
+    const assignedTo = item.fields['System.AssignedTo']
+    const email = assignedTo?.uniqueName  || ''
+    const name  = assignedTo?.displayName || email
+    const key   = normalizeIdentity(email || name)
+    if (!key) continue
+
+    if (!contributors.has(key)) {
+      contributors.set(key, {
+        key, displayName: name, email,
+        isTeamMember: false,
+        commits: 0, prs: 0, workItems: 0, effortHours: 0,
+      })
+    }
+
+    const row = contributors.get(key)!
+    row.workItems   += 1
+    row.effortHours += item.fields['Microsoft.VSTS.Scheduling.Effort'] || 0
+  }
+
+  const result = Array.from(contributors.values())
+  console.log('[DEBUG] final merged contributor count:', result.length)
+  console.log('═══════════════════════════════════════════')
+
+  return result
+}
+
+// ─────────────────────────────────────────────
+// Step 6 — fetch detail (commit messages, PR titles)
+// for ONE contributor, by their normalized key
+// ─────────────────────────────────────────────
+
+export async function fetchContributorDetail(
+  contributorKey: string,
+  dateRange: 'today' | 'week' | 'month'
+) {
+  const [commits, prs, workItems] = await Promise.all([
+    fetchAllCommits(dateRange),
+    fetchAllPullRequests(dateRange),
+    fetchAllWorkItems(dateRange),
+  ])
+
+  const myCommits = commits.filter((c: any) => {
+    const key = normalizeIdentity(c.author?.email || c.author?.name)
+    return key === contributorKey
+  })
+
+  const myPrs = (prs as any[]).filter((pr) => {
+    const key = normalizeIdentity(pr.createdBy?.uniqueName || pr.createdBy?.displayName)
+    return key === contributorKey
+  })
+
+  const myWorkItems = (workItems as any[]).filter((item) => {
+    const assignedTo = item.fields['System.AssignedTo']
+    const key = normalizeIdentity(assignedTo?.uniqueName || assignedTo?.displayName)
+    return key === contributorKey
+  })
+
+  console.log(`[DEBUG] detail for "${contributorKey}" — commits: ${myCommits.length}, prs: ${myPrs.length}, workItems: ${myWorkItems.length}`)
+
+  return {
+    commits: myCommits.map((c: any) => ({
+      commitId: c.commitId,
+      comment:  c.comment,
+      date:     c.author?.date,
+    })),
+    prs: myPrs.map((pr: any) => ({
+      pullRequestId: pr.pullRequestId,
+      title:         pr.title,
+      status:        pr.status,
+      creationDate:  pr.creationDate,
+    })),
+    workItems: myWorkItems.map((item: any) => ({
+      id:     item.id,
+      title:  item.fields['System.Title'],
+      state:  item.fields['System.State'],
+      effort: item.fields['Microsoft.VSTS.Scheduling.Effort'] || 0,
+    })),
+  }
 }

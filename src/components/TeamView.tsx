@@ -1,26 +1,21 @@
 import { useEffect, useState } from 'react'
-import type { Developer, AnomalyResult } from '../types'
-import { fetchTeamMembers, fetchCommits, fetchPullRequests, fetchWorkItems } from '../api/adoApi'
+import { fetchProjectContributors, type Contributor } from '../api/adoApi'
 import { detectAnomalies } from '../anomaly/detector'
 import AnomalyBadge from './AnomalyBadge'
+import type { Developer, AnomalyResult } from '../types'
 
 interface Props {
   onSelectDeveloper: (dev: Developer) => void
   dateRange:         'today' | 'week' | 'month'
 }
 
-interface DeveloperRow {
-  developer: Developer
-  commits:   number
-  prs:       number
-  workItems: number
-  effort:    number
-  anomaly:   AnomalyResult
-  loading:   boolean
+interface Row {
+  contributor: Contributor
+  anomaly:     AnomalyResult
 }
 
 export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
-  const [rows,  setRows]  = useState<DeveloperRow[]>([])
+  const [rows,    setRows]    = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
 
@@ -33,54 +28,23 @@ export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
     setError(null)
 
     try {
-      const members = await fetchTeamMembers()
+      const contributors = await fetchProjectContributors(dateRange)
 
-      // Initialise rows with loading state
-      const initialRows: DeveloperRow[] = members.map((m: any) => ({
-        developer: {
-          id:       m.identity.id,
-          name:     m.identity.displayName,
-          email:    m.identity.uniqueName,
-          imageUrl: m.identity.imageUrl,
-        },
-        commits:   0,
-        prs:       0,
-        workItems: 0,
-        effort:    0,
-        anomaly:   detectAnomalies(0, 0, 0, 0, dateRange),
-        loading:   true,
+      const built: Row[] = contributors.map(c => ({
+        contributor: c,
+        anomaly: detectAnomalies(
+          c.effortHours,
+          c.commits,
+          c.prs,
+          c.workItems,
+          dateRange
+        ),
       }))
 
-      setRows(initialRows)
-      setLoading(false)
-
-      // Load each developer's data in parallel
-      await Promise.all(
-        initialRows.map(async (row, index) => {
-          try {
-            const [commits, prs, workItems] = await Promise.all([
-              fetchCommits(row.developer.email, dateRange),
-              fetchPullRequests(row.developer.email, dateRange),
-              fetchWorkItems(row.developer.email, dateRange),
-            ])
-
-            const effort    = workItems.reduce((sum, wi) => sum + (wi.effort || 0), 0)
-            const anomaly   = detectAnomalies(effort, commits.length, prs.length, workItems.length, dateRange)
-
-            setRows(prev => prev.map((r, i) =>
-              i === index
-                ? { ...r, commits: commits.length, prs: prs.length, workItems: workItems.length, effort, anomaly, loading: false }
-                : r
-            ))
-          } catch {
-            setRows(prev => prev.map((r, i) =>
-              i === index ? { ...r, loading: false } : r
-            ))
-          }
-        })
-      )
+      setRows(built)
     } catch (err) {
       setError('Failed to load team data. Check your ADO connection.')
+    } finally {
       setLoading(false)
     }
   }
@@ -111,10 +75,9 @@ export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
 
   return (
     <div>
-      {/* SUMMARY CARDS */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Team Members</p>
+          <p className="text-xs text-gray-500 uppercase tracking-wide">Contributors</p>
           <p className="text-2xl font-bold text-gray-900 mt-1">{rows.length}</p>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4">
@@ -126,12 +89,11 @@ export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 uppercase tracking-wide">Total Commits</p>
           <p className="text-2xl font-bold text-gray-900 mt-1">
-            {rows.reduce((sum, r) => sum + r.commits, 0)}
+            {rows.reduce((sum, r) => sum + r.contributor.commits, 0)}
           </p>
         </div>
       </div>
 
-      {/* TEAM TABLE */}
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
         <table className="w-full">
           <thead>
@@ -147,60 +109,54 @@ export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
           <tbody>
             {rows.map((row) => (
               <tr
-                key={row.developer.id}
-                onClick={() => onSelectDeveloper(row.developer)}
+                key={row.contributor.key}
+                onClick={() => onSelectDeveloper({
+                  id:    row.contributor.key,
+                  name:  row.contributor.displayName,
+                  email: row.contributor.email,
+                })}
                 className={`border-b border-gray-100 cursor-pointer hover:bg-blue-50 transition-colors
                   ${row.anomaly.hasAnomaly ? 'bg-red-50' : ''}`}
               >
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
-                      {row.developer.name.charAt(0).toUpperCase()}
+                      {row.contributor.displayName.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <p className="font-medium text-gray-900 text-sm">{row.developer.name}</p>
-                      <p className="text-xs text-gray-400">{row.developer.email}</p>
+                      <p className="font-medium text-gray-900 text-sm">
+                        {row.contributor.displayName}
+                        {!row.contributor.isTeamMember && (
+                          <span className="ml-2 text-xs text-blue-500 font-normal">external</span>
+                        )}
+                      </p>
+                      <p className="text-xs text-gray-400">{row.contributor.email}</p>
                     </div>
                   </div>
                 </td>
                 <td className="px-4 py-3 text-center">
-                  {row.loading
-                    ? <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin mx-auto"/>
-                    : <span className={`font-semibold text-sm ${row.commits === 0 ? 'text-red-500' : 'text-gray-900'}`}>
-                        {row.commits}
-                      </span>
-                  }
+                  <span className={`font-semibold text-sm ${row.contributor.commits === 0 ? 'text-red-500' : 'text-gray-900'}`}>
+                    {row.contributor.commits}
+                  </span>
                 </td>
                 <td className="px-4 py-3 text-center">
-                  {row.loading
-                    ? <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin mx-auto"/>
-                    : <span className={`font-semibold text-sm ${row.prs === 0 ? 'text-orange-500' : 'text-gray-900'}`}>
-                        {row.prs}
-                      </span>
-                  }
+                  <span className={`font-semibold text-sm ${row.contributor.prs === 0 ? 'text-orange-500' : 'text-gray-900'}`}>
+                    {row.contributor.prs}
+                  </span>
                 </td>
                 <td className="px-4 py-3 text-center">
-                  {row.loading
-                    ? <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin mx-auto"/>
-                    : <span className="font-semibold text-sm text-gray-900">{row.workItems}</span>
-                  }
+                  <span className="font-semibold text-sm text-gray-900">{row.contributor.workItems}</span>
                 </td>
                 <td className="px-4 py-3 text-center">
-                  {row.loading
-                    ? <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin mx-auto"/>
-                    : <span className={`font-semibold text-sm
-                        ${row.effort < 1 || row.effort > 3
-                          ? 'text-red-500'
-                          : 'text-green-600'}`}>
-                        {row.effort.toFixed(1)}
-                      </span>
-                  }
+                  <span className={`font-semibold text-sm
+                    ${row.contributor.effortHours < 1 || row.contributor.effortHours > 3
+                      ? 'text-red-500'
+                      : 'text-green-600'}`}>
+                    {row.contributor.effortHours.toFixed(1)}
+                  </span>
                 </td>
                 <td className="px-4 py-3">
-                  {row.loading
-                    ? <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin mx-auto"/>
-                    : <AnomalyBadge anomaly={row.anomaly} compact />
-                  }
+                  <AnomalyBadge anomaly={row.anomaly} compact />
                 </td>
               </tr>
             ))}
