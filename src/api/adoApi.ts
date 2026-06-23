@@ -150,17 +150,30 @@ async function fetchAllCommits(dateRange: 'today' | 'week' | 'month') {
 async function fetchAllPullRequests(dateRange: 'today' | 'week' | 'month') {
   await SDK.ready()
   const context   = SDK.getWebContext()
-  const gitClient = getClient(GitRestClient)
-  const fromDate  = new Date(buildDateFilter(dateRange))
+  const gitClient  = getClient(GitRestClient)
+  const fromDate   = new Date(buildDateFilter(dateRange))
 
-  const prs = await gitClient.getPullRequestsByProject(
-    context.project.id,
-    { status: 0 } as any  // 0 = all statuses
-  )
+  const repos = await gitClient.getRepositories(context.project.id)
+  console.log('[DEBUG] fetching PRs across repos:', repos.length)
 
-  console.log('[DEBUG] PRs found (all time, before date filter):', prs.length)
+  const allPrs: any[] = []
 
-  const filtered = prs.filter((pr: any) => new Date(pr.creationDate) >= fromDate)
+  for (const repo of repos) {
+    try {
+      const prs = await gitClient.getPullRequests(
+        repo.id,
+        { status: 4 } as any,   // 4 = All (not 0)
+        context.project.id
+      )
+      allPrs.push(...prs)
+    } catch (err) {
+      console.warn(`[DEBUG] could not read PRs for repo "${repo.name}":`, err)
+      continue
+    }
+  }
+
+  console.log('[DEBUG] PRs found (all time, before date filter):', allPrs.length)
+  const filtered = allPrs.filter((pr: any) => new Date(pr.creationDate) >= fromDate)
   console.log('[DEBUG] PRs after date filter:', filtered.length)
 
   return filtered
@@ -177,10 +190,6 @@ async function fetchAllWorkItems(dateRange: 'today' | 'week' | 'month') {
   const witClient = getClient(WorkItemTrackingRestClient)
   const fromDate  = buildWiqlDateFilter(dateRange)
 
-  // Note: [System.TeamProject] filter intentionally omitted — the
-  // project scope is already enforced by passing context.project.id
-  // into queryByWiql() below. Including it as a text filter was
-  // previously causing all results to be silently filtered out.
   const wiql = {
     query: `SELECT [System.Id], [System.Title], [System.State],
                    [System.AssignedTo], [Microsoft.VSTS.Scheduling.Effort]
@@ -196,17 +205,18 @@ async function fetchAllWorkItems(dateRange: 'today' | 'week' | 'month') {
 
   if (ids.length === 0) return []
 
-  // ADO caps batch reads — chunk into groups of 200 to be safe
+  // ADO caps batch reads at 200 ids — chunk safely below that
   const chunks: number[][] = []
-  for (let i = 0; i < ids.length; i += 200) {
-    chunks.push(ids.slice(i, i + 200))
+  for (let i = 0; i < ids.length; i += 50) {
+    chunks.push(ids.slice(i, i + 50))
   }
 
   const allItems = []
   for (const chunk of chunks) {
     const items = await witClient.getWorkItems(
       chunk,
-      'System.Title,System.State,System.AssignedTo,Microsoft.VSTS.Scheduling.Effort'
+      context.project.id,
+      ['System.Title', 'System.State', 'System.AssignedTo', 'Microsoft.VSTS.Scheduling.Effort']
     )
     allItems.push(...items)
   }
@@ -214,6 +224,9 @@ async function fetchAllWorkItems(dateRange: 'today' | 'week' | 'month') {
   console.log('[DEBUG] work items fully fetched:', allItems.length)
   return allItems
 }
+
+
+
 
 // ─────────────────────────────────────────────
 // Step 5 — merge everything into one contributor list
