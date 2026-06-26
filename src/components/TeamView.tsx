@@ -34,7 +34,6 @@ export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
         contributor: c,
         anomaly:     detectAnomalies(c, dateRange),
       }))
-      // Sort: anomalies first, then by commit count descending
       built.sort((a, b) => {
         if (a.anomaly.hasAnomaly !== b.anomaly.hasAnomaly) {
           return a.anomaly.hasAnomaly ? -1 : 1
@@ -53,8 +52,8 @@ export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
-          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-gray-500 text-sm">Loading team data...</p>
+          <div className="w-7 h-7 border-[3px] border-[#E1E1E1] border-t-[#0078D4] rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-[#605E5C] text-sm">Loading team data…</p>
         </div>
       </div>
     )
@@ -62,108 +61,162 @@ export default function TeamView({ onSelectDeveloper, dateRange }: Props) {
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-        <p className="text-red-600 font-medium">{error}</p>
-        <button onClick={loadTeam} className="mt-3 text-sm text-red-500 underline">
+      <div className="bg-white border border-[#E1E1E1] rounded-lg p-8 text-center max-w-md mx-auto">
+        <p className="text-[#D13438] font-medium mb-1">Couldn&apos;t load team data</p>
+        <p className="text-sm text-[#605E5C] mb-4">{error}</p>
+        <button
+          onClick={loadTeam}
+          className="px-4 py-1.5 rounded-md text-sm font-medium bg-[#0078D4] text-white hover:bg-[#0A4C8C] transition-colors
+                     focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0078D4]"
+        >
           Retry
         </button>
       </div>
     )
   }
 
-  const anomalyCount  = rows.filter(r => r.anomaly.hasAnomaly).length
+  const anomalyCount = rows.filter(r => r.anomaly.hasAnomaly).length
   const totalCommits  = rows.reduce((sum, r) => sum + r.contributor.commits.length, 0)
 
   return (
-    <div>
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Contributors</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{rows.length}</p>
-        </div>
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Anomalies Detected</p>
-          <p className={`text-2xl font-bold mt-1 ${anomalyCount > 0 ? 'text-red-600' : 'text-green-600'}`}>
-            {anomalyCount}
-          </p>
-        </div>
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">Total Commits</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{totalCommits}</p>
-        </div>
+    <div className="space-y-5">
+
+      {/* SUMMARY CARDS */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <SummaryCard label="Contributors" value={rows.length} />
+        <SummaryCard
+          label="Anomalies Detected"
+          value={anomalyCount}
+          tone={anomalyCount > 0 ? 'danger' : 'success'}
+        />
+        <SummaryCard label="Total Commits" value={totalCommits} />
       </div>
 
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="text-left   px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-2/5">Developer</th>
-              <th className="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Commits</th>
-              <th className="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">PRs</th>
-              <th className="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Work Items</th>
-              <th className="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Effort (hrs)</th>
-              <th className="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide w-32">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr
-                key={row.contributor.key}
-                onClick={() => onSelectDeveloper({
-                  id:    row.contributor.key,
-                  name:  row.contributor.displayName,
-                  email: row.contributor.email,
-                })}
-                className={`border-b border-gray-100 cursor-pointer hover:bg-blue-50 transition-colors
-                  ${row.anomaly.hasAnomaly ? 'bg-red-50' : ''}`}
-              >
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                      {row.contributor.displayName.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-medium text-gray-900 text-sm truncate">{row.contributor.displayName}</p>
-                      <p className="text-xs text-gray-400 truncate">{row.contributor.email}</p>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <span className={`font-semibold text-sm tabular-nums ${row.contributor.commits.length === 0 ? 'text-red-500' : 'text-gray-900'}`}>
-                    {row.contributor.commits.length}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <span className="font-semibold text-sm tabular-nums text-gray-900">
-                    {row.contributor.prs.length}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <span className="font-semibold text-sm tabular-nums text-gray-900">
-                    {row.contributor.workItems.length}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <span className={`font-semibold text-sm tabular-nums ${row.contributor.totalEffortHours === 0 ? 'text-red-500' : 'text-gray-900'}`}>
-                    {row.contributor.totalEffortHours.toFixed(1)}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  {row.anomaly.hasAnomaly ? (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700 border border-red-200">
-                      🔴 {row.anomaly.items.length} issue{row.anomaly.items.length !== 1 ? 's' : ''}
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
-                      ✅ Normal
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {/* TEAM TABLE */}
+      <div className="bg-white rounded-lg border border-[#E1E1E1] overflow-hidden">
+        {rows.length === 0 ? (
+          <div className="py-14 text-center">
+            <p className="text-sm text-[#605E5C]">
+              No contributor activity found for this period.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="bg-[#FAFAFA] border-b border-[#E1E1E1]">
+                  <Th align="left"   className="w-[34%]">Developer</Th>
+                  <Th align="center">Commits</Th>
+                  <Th align="center">PRs</Th>
+                  <Th align="center">Work Items</Th>
+                  <Th align="center">Effort (hrs)</Th>
+                  <Th align="center" className="w-32">Status</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr
+                    key={row.contributor.key}
+                    onClick={() => onSelectDeveloper({
+                      id:    row.contributor.key,
+                      name:  row.contributor.displayName,
+                      email: row.contributor.email,
+                    })}
+                    className={`border-b border-[#F3F2F1] last:border-b-0 cursor-pointer transition-colors
+                      hover:bg-[#EFF6FC]
+                      ${row.anomaly.hasAnomaly ? 'bg-[#FDF3F4]' : ''}`}
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-[#0078D4] flex items-center justify-center
+                                        text-white text-xs font-semibold shrink-0">
+                          {row.contributor.displayName.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-medium text-[#1B1A19] text-sm truncate">
+                            {row.contributor.displayName}
+                          </p>
+                          <p className="text-xs text-[#605E5C] truncate">
+                            {row.contributor.email}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <Td value={row.contributor.commits.length} flagWhenZero />
+                    <Td value={row.contributor.prs.length} />
+                    <Td value={row.contributor.workItems.length} />
+                    <Td value={row.contributor.totalEffortHours.toFixed(1)} flagWhenZero={row.contributor.totalEffortHours === 0} />
+                    <td className="px-4 py-3 text-center">
+                      <StatusPill anomaly={row.anomaly} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// Presentational sub-components
+// ─────────────────────────────────────────────
+
+function SummaryCard({
+  label, value, tone = 'default',
+}: { label: string, value: number, tone?: 'default' | 'success' | 'danger' }) {
+  const valueColor =
+    tone === 'success' ? 'text-[#107C10]' :
+    tone === 'danger'  ? 'text-[#D13438]' :
+    'text-[#1B1A19]'
+
+  return (
+    <div className="bg-white rounded-lg border border-[#E1E1E1] p-4">
+      <p className="text-xs font-medium text-[#605E5C] uppercase tracking-wide">{label}</p>
+      <p className={`text-2xl font-semibold mt-1.5 tabular-nums ${valueColor}`}>{value}</p>
+    </div>
+  )
+}
+
+function Th({
+  children, align = 'left', className = '',
+}: { children: React.ReactNode, align?: 'left' | 'center', className?: string }) {
+  return (
+    <th className={`px-4 py-3 text-xs font-semibold text-[#605E5C] uppercase tracking-wide
+                     ${align === 'center' ? 'text-center' : 'text-left'} ${className}`}>
+      {children}
+    </th>
+  )
+}
+
+function Td({ value, flagWhenZero }: { value: number | string, flagWhenZero?: boolean }) {
+  const isZero = flagWhenZero && (value === 0 || value === '0.0')
+  return (
+    <td className="px-4 py-3 text-center">
+      <span className={`text-sm font-semibold tabular-nums ${isZero ? 'text-[#D13438]' : 'text-[#1B1A19]'}`}>
+        {value}
+      </span>
+    </td>
+  )
+}
+
+function StatusPill({ anomaly }: { anomaly: AnomalyResult }) {
+  if (anomaly.hasAnomaly) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
+                        bg-[#FDF3F4] text-[#D13438] border border-[#F3D6D7]">
+        <span className="w-1.5 h-1.5 rounded-full bg-[#D13438]" aria-hidden="true" />
+        {anomaly.items.length} issue{anomaly.items.length !== 1 ? 's' : ''}
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
+                      bg-[#EAF7EA] text-[#107C10] border border-[#CDEACD]">
+      <span className="w-1.5 h-1.5 rounded-full bg-[#107C10]" aria-hidden="true" />
+      Normal
+    </span>
   )
 }
