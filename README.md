@@ -166,6 +166,4 @@ The extension manifest in `vss-extension.json` defines:
 - Add multi-project or multi-team reporting support
 - Add automated packaging and CI/CD publishing workflows
 
-## License
 
-This repository does not include a license file. Add a `LICENSE` file if you want to publish this project under a specific open source license.
