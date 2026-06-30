@@ -1,4 +1,4 @@
-# DevOps Audit Hub for Bluescope
+# DevOps Audit Hub 
 
 **Azure DevOps extension for team productivity monitoring, commit analytics, and anomaly detection.**
 
