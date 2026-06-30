@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Developer } from '../types'
 import { fetchContributorDetail } from '../api/adoApi'
-import type { Contributor } from '../api/adoApi'
+import type { Contributor, PeriodInput } from '../api/adoApi'
+import { exportElementToPdf } from '../utils/pdfExport'
 import { detectAnomalies } from '../anomaly/detector'
 import type { AnomalyResult } from '../anomaly/detector'
 
 interface Props {
   developer: Developer
-  dateRange: 'today' | 'week' | 'month'
+  dateRange: PeriodInput
 }
 
 type Tab = 'overview' | 'commits' | 'workitems' | 'prs' | 'effort'
@@ -18,6 +19,11 @@ export default function DeveloperView({ developer, dateRange }: Props) {
   const [loading,      setLoading]     = useState(true)
   const [error,        setError]       = useState<string | null>(null)
   const [tab,          setTab]         = useState<Tab>('overview')
+  const [scoreInfoOpen, setScoreInfoOpen] = useState(false)
+  const [exporting,    setExporting]   = useState(false)
+
+  const panelRef = useRef<HTMLDivElement>(null)
+  const pageRef  = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     loadData()
@@ -34,11 +40,30 @@ export default function DeveloperView({ developer, dateRange }: Props) {
         return
       }
       setContributor(detail)
-      setAnomaly(detectAnomalies(detail, dateRange))
+
+      const anomalyPeriod = typeof dateRange === 'object' ? 'month' : dateRange
+      setAnomaly(detectAnomalies(detail, anomalyPeriod))
     } catch {
       setError('Failed to load developer data.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  function jumpToTab(target: Tab) {
+    setTab(target)
+    requestAnimationFrame(() => {
+      panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
+  async function handleExport() {
+    if (!pageRef.current) return
+    setExporting(true)
+    try {
+      await exportElementToPdf(pageRef.current.id, `${developer.name.replace(/\s+/g, '_')}_audit_report`)
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -60,8 +85,7 @@ export default function DeveloperView({ developer, dateRange }: Props) {
         <p className="text-sm text-[#605E5C] mb-4">{error}</p>
         <button
           onClick={loadData}
-          className="px-4 py-1.5 rounded-md text-sm font-medium bg-[#0078D4] text-white hover:bg-[#0A4C8C] transition-colors
-                     focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0078D4]"
+          className="px-4 py-1.5 rounded-md text-sm font-medium bg-[#0078D4] text-white hover:bg-[#0A4C8C] transition-colors"
         >
           Retry
         </button>
@@ -78,7 +102,7 @@ export default function DeveloperView({ developer, dateRange }: Props) {
   ]
 
   return (
-    <div className="space-y-5">
+    <div id="developer-view-export-root" ref={pageRef} className="space-y-5" onClick={() => setScoreInfoOpen(false)}>
 
       {/* HEADER */}
       <div className="bg-white rounded-lg border border-[#E1E1E1] p-5">
@@ -93,33 +117,104 @@ export default function DeveloperView({ developer, dateRange }: Props) {
               <p className="text-sm text-[#605E5C] truncate">{contributor.email}</p>
             </div>
           </div>
-          {anomaly && <StatusBadge anomaly={anomaly} />}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
+                         border border-[#E1E1E1] text-[#605E5C] hover:bg-[#FAFAFA] transition-colors disabled:opacity-50"
+            >
+              <span aria-hidden="true">⬇</span> {exporting ? 'Exporting…' : 'Export PDF'}
+            </button>
+            {anomaly && (
+              anomaly.hasAnomaly ? (
+                <button
+                  onClick={() => jumpToTab('overview')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
+                             bg-[#FDF3F4] text-[#D13438] border border-[#F3D6D7] hover:bg-[#FBE4E6] transition-colors"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#D13438]" />
+                  {anomaly.items.length} issue{anomaly.items.length !== 1 ? 's' : ''} detected
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
+                                  bg-[#EAF7EA] text-[#107C10] border border-[#CDEACD]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#107C10]" />
+                  Normal
+                </span>
+              )
+            )}
+          </div>
         </div>
       </div>
 
       {/* SUMMARY METRICS */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <Metric label="Commits"       value={contributor.commits.length}    flagBad={contributor.commits.length === 0} />
-        <Metric label="Pull Requests" value={contributor.prs.length} />
-        <Metric label="Work Items"    value={contributor.workItems.length} />
-        <Metric label="Effort (hrs)"  value={contributor.totalEffortHours.toFixed(1)} flagBad={contributor.totalEffortHours === 0} />
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+        <Metric icon="🔀" label="Commits"       value={contributor.commits.length}    flagBad={contributor.commits.length === 0} />
+        <Metric icon="🔁" label="Pull Requests" value={contributor.prs.length} />
+        <Metric icon="📋" label="Work Items"    value={contributor.workItems.length} />
+        <Metric icon="⏱️" label="Effort (hrs)"  value={contributor.totalEffortHours.toFixed(1)} flagBad={contributor.totalEffortHours === 0} />
+        {developer.score !== undefined && (
+          <Metric
+            icon="🏆" label="Score" value={developer.score} scoreTone
+            infoSlot={
+              <div className="relative" onClick={(e) => e.stopPropagation()}>
+                <button
+                  onClick={() => setScoreInfoOpen(o => !o)}
+                  aria-label="How is the score calculated?"
+                  className="w-4 h-4 flex items-center justify-center rounded-full bg-[#F3F2F1] text-[#605E5C]
+                             text-[10px] font-semibold hover:bg-[#E1E1E1] transition-colors"
+                >
+                  ?
+                </button>
+                {scoreInfoOpen && (
+                  <div className="absolute z-20 top-full right-0 mt-2 w-60 bg-white border border-[#E1E1E1]
+                                  rounded-lg shadow-lg p-3 text-left">
+                    <p className="text-[11px] font-semibold text-[#1B1A19] mb-1.5">How this score works</p>
+                    <p className="text-[11px] text-[#605E5C] leading-relaxed">
+                      Points come from commits, pull requests, work items, and logged effort —
+                      with effort capped at 150% of expected hours so over-logging can&apos;t
+                      inflate the score. Anomalies reduce points, with working-hours
+                      violations penalised in proportion to how extreme they are. The
+                      final score is scaled 0–100 relative to the top performer in the
+                      current view.
+                    </p>
+                  </div>
+                )}
+              </div>
+            }
+          />
+        )}
       </div>
 
+      {/* SCORE BREAKDOWN */}
+      {developer.scoreBreakdown && (
+        <div className="bg-white rounded-lg border border-[#E1E1E1] p-5">
+          <h3 className="text-sm font-semibold text-[#1B1A19] mb-3">Score Breakdown</h3>
+          <div className="space-y-2">
+            <BreakdownRow label="Commits"        points={developer.scoreBreakdown.commitsPoints}   onClick={() => jumpToTab('commits')} />
+            <BreakdownRow label="Pull Requests"  points={developer.scoreBreakdown.prsPoints}        onClick={() => jumpToTab('prs')} />
+            <BreakdownRow label="Work Items"     points={developer.scoreBreakdown.workItemsPoints}  onClick={() => jumpToTab('workitems')} />
+            <BreakdownRow label="Logged Effort"  points={developer.scoreBreakdown.effortPoints}     onClick={() => jumpToTab('effort')} />
+            <BreakdownRow label="Anomaly Penalty" points={developer.scoreBreakdown.anomalyPoints}   onClick={() => jumpToTab('overview')} />
+            <div className="flex items-center justify-between pt-2 border-t border-[#F3F2F1]">
+              <span className="text-sm font-semibold text-[#1B1A19]">Raw Total</span>
+              <span className="text-sm font-semibold text-[#1B1A19] tabular-nums">
+                {developer.scoreBreakdown.rawScore.toFixed(1)} pts
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TABS */}
-      <div className="bg-white rounded-lg border border-[#E1E1E1]">
-        <div
-          role="tablist"
-          aria-label="Developer detail sections"
-          className="flex items-center gap-1 px-3 pt-3 border-b border-[#E1E1E1] overflow-x-auto"
-        >
+      <div ref={panelRef} className="bg-white rounded-lg border border-[#E1E1E1] scroll-mt-4">
+        <div className="flex items-center gap-1 px-3 pt-3 border-b border-[#E1E1E1] overflow-x-auto">
           {tabs.map(t => (
             <button
               key={t.key}
-              role="tab"
-              aria-selected={tab === t.key}
               onClick={() => setTab(t.key)}
               className={`px-3.5 py-2 rounded-t-md text-sm font-medium whitespace-nowrap transition-colors -mb-px border-b-2
-                focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0078D4]
                 ${tab === t.key
                   ? 'border-[#0078D4] text-[#0078D4] bg-[#EFF6FC]'
                   : 'border-transparent text-[#605E5C] hover:text-[#1B1A19] hover:bg-[#FAFAFA]'}`}
@@ -129,7 +224,7 @@ export default function DeveloperView({ developer, dateRange }: Props) {
           ))}
         </div>
 
-        <div className="p-5">
+        <div className="p-5 max-h-[480px] overflow-y-auto">
           {tab === 'overview'  && <OverviewTab anomaly={anomaly} />}
           {tab === 'commits'   && <CommitsTab commits={contributor.commits} />}
           {tab === 'workitems' && <WorkItemsTab workItems={contributor.workItems} />}
@@ -146,33 +241,37 @@ export default function DeveloperView({ developer, dateRange }: Props) {
 // Shared presentational pieces
 // ─────────────────────────────────────────────
 
-function Metric({ label, value, flagBad }: { label: string, value: number | string, flagBad?: boolean }) {
+function Metric({
+  icon, label, value, flagBad, scoreTone, infoSlot,
+}: { icon: string, label: string, value: number | string, flagBad?: boolean, scoreTone?: boolean, infoSlot?: React.ReactNode }) {
+  const color = scoreTone
+    ? (Number(value) >= 75 ? 'text-[#107C10]' : Number(value) >= 50 ? 'text-[#8A6D00]' : 'text-[#D13438]')
+    : flagBad ? 'text-[#D13438]' : 'text-[#1B1A19]'
+
   return (
-    <div className="bg-white rounded-lg border border-[#E1E1E1] p-4 text-center">
-      <p className="text-xs font-medium text-[#605E5C] uppercase tracking-wide">{label}</p>
-      <p className={`text-2xl font-semibold mt-1.5 tabular-nums ${flagBad ? 'text-[#D13438]' : 'text-[#1B1A19]'}`}>
-        {value}
-      </p>
+    <div className="bg-white rounded-lg border border-[#E1E1E1] p-4 text-center relative">
+      <div className="flex items-center justify-center gap-1.5">
+        <span className="text-sm" aria-hidden="true">{icon}</span>
+        <p className="text-xs font-medium text-[#605E5C] uppercase tracking-wide">{label}</p>
+        {infoSlot}
+      </div>
+      <p className={`text-2xl font-semibold mt-1.5 tabular-nums ${color}`}>{value}</p>
     </div>
   )
 }
 
-function StatusBadge({ anomaly }: { anomaly: AnomalyResult }) {
-  if (anomaly.hasAnomaly) {
-    return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
-                        bg-[#FDF3F4] text-[#D13438] border border-[#F3D6D7] shrink-0">
-        <span className="w-1.5 h-1.5 rounded-full bg-[#D13438]" aria-hidden="true" />
-        {anomaly.items.length} issue{anomaly.items.length !== 1 ? 's' : ''} detected
-      </span>
-    )
-  }
+function BreakdownRow({ label, points, onClick }: { label: string, points: number, onClick: () => void }) {
+  const isNegative = points < 0
   return (
-    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
-                      bg-[#EAF7EA] text-[#107C10] border border-[#CDEACD] shrink-0">
-      <span className="w-1.5 h-1.5 rounded-full bg-[#107C10]" aria-hidden="true" />
-      Normal
-    </span>
+    <button
+      onClick={onClick}
+      className="w-full flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-[#FAFAFA] transition-colors text-left"
+    >
+      <span className="text-sm text-[#605E5C]">{label}</span>
+      <span className={`text-sm font-medium tabular-nums ${isNegative ? 'text-[#D13438]' : 'text-[#1B1A19]'}`}>
+        {isNegative ? '' : '+'}{points.toFixed(1)} pts
+      </span>
+    </button>
   )
 }
 
@@ -201,7 +300,7 @@ function OverviewTab({ anomaly }: { anomaly: AnomalyResult | null }) {
       {anomaly.items.map((item, i) => (
         <div
           key={i}
-          className="flex items-start gap-3 p-3 bg-[#FDF3F4] border border-[#F3D6D7] rounded-lg"
+          className="flex items-start gap-3 p-3 bg-white border border-[#E1E1E1] border-l-[3px] border-l-[#D13438] rounded-lg"
         >
           <span className="text-[#D13438] mt-0.5 text-sm shrink-0" aria-hidden="true">●</span>
           <div className="min-w-0">
@@ -219,13 +318,25 @@ function CommitsTab({ commits }: { commits: { commitId: string, comment: string,
     return <EmptyState message="No commits in this period." />
   }
   return (
-    <div className="divide-y divide-[#F3F2F1] -mx-5 -my-5">
-      {commits.map(c => (
-        <div key={c.commitId} className="px-5 py-3">
-          <p className="text-sm text-[#1B1A19] font-medium leading-snug">{c.comment}</p>
-          <p className="text-xs text-[#605E5C] mt-1">{new Date(c.date).toLocaleString()}</p>
-        </div>
-      ))}
+    <div className="overflow-x-auto -mx-5 -my-5">
+      <table className="w-full border-collapse">
+        <thead className="sticky top-0">
+          <tr className="bg-[#FAFAFA]">
+            <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide">Message</th>
+            <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide w-44">Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {commits.map(c => (
+            <tr key={c.commitId} className="border-t border-[#F3F2F1]">
+              <td className="px-5 py-2.5 text-sm text-[#1B1A19]">{c.comment}</td>
+              <td className="px-5 py-2.5 text-sm text-[#605E5C] whitespace-nowrap">
+                {new Date(c.date).toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -237,7 +348,7 @@ function WorkItemsTab({ workItems }: { workItems: { id: number, title: string, s
   return (
     <div className="overflow-x-auto -mx-5 -my-5">
       <table className="w-full border-collapse">
-        <thead>
+        <thead className="sticky top-0">
           <tr className="bg-[#FAFAFA]">
             <th className="text-left   px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide w-20">ID</th>
             <th className="text-left   px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide">Title</th>
@@ -272,30 +383,44 @@ function PrsTab({ prs }: { prs: { pullRequestId: number, title: string, status: 
     return <EmptyState message="No pull requests in this period." />
   }
   return (
-    <div className="divide-y divide-[#F3F2F1] -mx-5 -my-5">
-      {prs.map(pr => (
-        <div key={pr.pullRequestId} className="px-5 py-3 flex items-center justify-between gap-4">
-          <p className="text-sm text-[#1B1A19] min-w-0 truncate">{pr.title}</p>
-          <span className="text-xs px-2 py-1 rounded-full font-medium bg-[#F3F2F1] text-[#605E5C] shrink-0 whitespace-nowrap">
-            {pr.status}
-          </span>
-        </div>
-      ))}
+    <div className="overflow-x-auto -mx-5 -my-5">
+      <table className="w-full border-collapse">
+        <thead className="sticky top-0">
+          <tr className="bg-[#FAFAFA]">
+            <th className="text-left   px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide">Title</th>
+            <th className="text-center px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide w-32">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {prs.map(pr => (
+            <tr key={pr.pullRequestId} className="border-t border-[#F3F2F1]">
+              <td className="px-5 py-2.5 text-sm text-[#1B1A19]">{pr.title}</td>
+              <td className="px-5 py-2.5 text-center">
+                <span className="text-xs px-2 py-1 rounded-full font-medium bg-[#F3F2F1] text-[#605E5C] whitespace-nowrap">
+                  {pr.status}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
 
 function EffortByDayTab({ workItems }: { workItems: { changedDate: string, effort: number }[] }) {
-  const grouped = new Map<string, number>()
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
+  const grouped = new Map<string, number>()
   for (const wi of workItems) {
     if (!wi.changedDate) continue
     const dateKey = new Date(wi.changedDate).toISOString().split('T')[0]
     grouped.set(dateKey, (grouped.get(dateKey) || 0) + wi.effort)
   }
 
+  const dir = sortDir === 'asc' ? 1 : -1
   const rows = Array.from(grouped.entries())
-    .sort((a, b) => b[0].localeCompare(a[0]))
+    .sort((a, b) => a[0].localeCompare(b[0]) * dir)
     .map(([date, hours]) => ({
       date,
       day: new Date(date).toLocaleDateString('en-US', { weekday: 'long' }),
@@ -309,10 +434,18 @@ function EffortByDayTab({ workItems }: { workItems: { changedDate: string, effor
   return (
     <div className="overflow-x-auto -mx-5 -my-5">
       <table className="w-full border-collapse">
-        <thead>
+        <thead className="sticky top-0">
           <tr className="bg-[#FAFAFA]">
-            <th className="text-left   px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide w-36">Date</th>
-            <th className="text-left   px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide">Day</th>
+            <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide w-36">
+              <button
+                onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+                className="flex items-center gap-1 hover:text-[#1B1A19] transition-colors"
+              >
+                Date
+                <span className="text-[10px] text-[#0078D4]">{sortDir === 'asc' ? '▲' : '▼'}</span>
+              </button>
+            </th>
+            <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide">Day</th>
             <th className="text-center px-5 py-2.5 text-xs font-semibold text-[#605E5C] uppercase tracking-wide w-32">Hours Worked</th>
           </tr>
         </thead>

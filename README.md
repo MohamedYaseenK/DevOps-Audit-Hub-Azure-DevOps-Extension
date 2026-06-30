@@ -1,4 +1,4 @@
-# Azure DevOps Hub for Productivity
+# DevOps Audit Hub for Bluescope
 
 **Azure DevOps extension for team productivity monitoring, commit analytics, and anomaly detection.**
 
@@ -32,6 +32,33 @@ This repository contains a React + TypeScript Azure DevOps hub extension that ru
 - Azure DevOps organization and project access
 - Browser session authenticated with Azure DevOps
 - (Optional) `tfx` CLI installed for packaging the extension
+
+## System Overview
+
+This system is a React + TypeScript Azure DevOps extension that runs inside the Azure DevOps web experience. It collects team-level and developer-level activity data, generates productivity and trend metrics, and surfaces potential anomalies in commits, pull requests, and work item activity.
+
+## Methodology and Steps
+
+1. Initialize the Azure DevOps Extension SDK.
+2. Authenticate the current Azure DevOps user session.
+3. Load the target team and project context from Azure DevOps.
+4. Fetch activity data from Azure DevOps APIs:
+   - work items
+   - git commits
+   - pull requests
+   - team and user details
+5. Aggregate and normalize the collected data by developer and time range.
+6. Calculate productivity metrics and trend summaries.
+7. Apply anomaly detection rules to detect unusual or unexpected activity.
+8. Render the results in an interactive dashboard with charts and detailed developer views.
+
+## What This System Does
+
+- Loads inside Azure DevOps as a hub extension
+- Reads Azure DevOps work item, commit, and pull request data
+- Computes team productivity metrics and developer activity summaries
+- Detects anomalous behavior using anomaly scoring rules
+- Displays dashboards, charts, and drill-down views for teams and individual developers
 
 ## Getting Started
 

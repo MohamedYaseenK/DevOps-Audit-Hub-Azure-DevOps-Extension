@@ -91,11 +91,11 @@ export function getExpectedWorkingHours(dateRange: 'today' | 'week' | 'month'): 
 // Fetch ALL commits across ALL repos
 // ─────────────────────────────────────────────
 
-async function fetchAllCommits(dateRange: 'today' | 'week' | 'month') {
+async function fetchAllCommits(dateRange:  PeriodInput) {
   await SDK.ready()
   const context   = SDK.getWebContext()
   const gitClient = getClient(GitRestClient)
-  const fromDate  = buildDateFilter(dateRange)
+  const fromDate  = resolveFromDate(dateRange)
 
   const repos = await gitClient.getRepositories(context.project.id)
   const allCommits: any[] = []
@@ -120,11 +120,11 @@ async function fetchAllCommits(dateRange: 'today' | 'week' | 'month') {
 // Fetch ALL PRs across ALL repos
 // ─────────────────────────────────────────────
 
-async function fetchAllPullRequests(dateRange: 'today' | 'week' | 'month') {
+async function fetchAllPullRequests(dateRange:  PeriodInput) {
   await SDK.ready()
   const context   = SDK.getWebContext()
   const gitClient = getClient(GitRestClient)
-  const fromDate  = new Date(buildDateFilter(dateRange))
+  const fromDate  = new Date(resolveFromDate(dateRange))
 
   const repos = await gitClient.getRepositories(context.project.id)
   const allPrs: any[] = []
@@ -149,20 +149,21 @@ async function fetchAllPullRequests(dateRange: 'today' | 'week' | 'month') {
 // Fetch ALL work items changed in range
 // ─────────────────────────────────────────────
 
-async function fetchAllWorkItems(dateRange: 'today' | 'week' | 'month') {
+async function fetchAllWorkItems(dateRange:  PeriodInput) {
   await SDK.ready()
   const context   = SDK.getWebContext()
   const witClient = getClient(WorkItemTrackingRestClient)
-  const fromDate  = buildWiqlDateFilter(dateRange)
+  const fromDate  = resolveWiqlFromDate(dateRange)
 
   const wiql = {
-    query: `SELECT [System.Id], [System.Title], [System.State],
-                   [System.AssignedTo], [Microsoft.VSTS.Scheduling.Effort],
-                   [System.ChangedDate]
-            FROM WorkItems
-            WHERE [System.ChangedDate] >= '${fromDate}'
-            ORDER BY [System.ChangedDate] DESC`
-  }
+  query: `SELECT [System.Id], [System.Title], [System.State],
+                 [System.AssignedTo], [Microsoft.VSTS.Scheduling.Effort],
+                 [System.ChangedDate]
+          FROM WorkItems
+          WHERE [System.TeamProject] = '${context.project.name}'
+          AND   [System.ChangedDate] >= '${fromDate}'
+          ORDER BY [System.ChangedDate] DESC`
+}
 
   const queryResult = await witClient.queryByWiql(wiql, context.project.id)
   const ids = (queryResult.workItems || []).map(w => w.id)
@@ -199,7 +200,7 @@ async function fetchAllWorkItems(dateRange: 'today' | 'week' | 'month') {
 // ─────────────────────────────────────────────
 
 export async function fetchProjectContributors(
-  dateRange: 'today' | 'week' | 'month'
+  dateRange:  PeriodInput
 ): Promise<Contributor[]> {
 
   const [commits, prs, workItems] = await Promise.all([
@@ -282,8 +283,110 @@ export async function fetchProjectContributors(
 
 export async function fetchContributorDetail(
   contributorKey: string,
-  dateRange: 'today' | 'week' | 'month'
+  dateRange: PeriodInput
 ): Promise<Contributor | null> {
   const all = await fetchProjectContributors(dateRange)
   return all.find(c => c.key === contributorKey) || null
+}
+
+// ─────────────────────────────────────────────
+// Custom date range support (additive — does not
+// change behaviour of 'today' | 'week' | 'month')
+// ─────────────────────────────────────────────
+
+export interface CustomRange {
+  from: string  // YYYY-MM-DD
+  to:   string  // YYYY-MM-DD
+}
+
+export type PeriodInput = 'today' | 'week' | 'month' | CustomRange
+
+function isCustomRange(period: PeriodInput): period is CustomRange {
+  return typeof period === 'object' && 'from' in period
+}
+
+function resolveFromDate(period: PeriodInput): string {
+  if (isCustomRange(period)) {
+    return new Date(period.from).toISOString()
+  }
+  return buildDateFilter(period)
+}
+
+function resolveWiqlFromDate(period: PeriodInput): string {
+  if (isCustomRange(period)) {
+    return period.from // already YYYY-MM-DD
+  }
+  return buildWiqlDateFilter(period)
+}
+
+
+// ─────────────────────────────────────────────
+// Score calculation — tentative weights,
+// intentionally isolated so they're easy to tune
+// without touching the formula logic itself
+// ─────────────────────────────────────────────
+
+export const SCORE_WEIGHTS = {
+  perCommit:      2,
+  perPR:          5,
+  perWorkItem:    1,
+  perEffortHour:  0.5,
+  perAnomaly:    -8,
+}
+
+export interface ScoreBreakdown {
+  commitsPoints:    number
+  prsPoints:        number
+  workItemsPoints:  number
+  effortPoints:     number
+  anomalyPoints:    number
+  rawScore:         number
+  score:            number   // normalised 0–100, filled in after all contributors are known
+}
+
+
+
+
+export function calculateRawScore(
+  contributor: Contributor,
+  anomalyItems: { type: string }[],
+  expectedHours: number
+): Omit<ScoreBreakdown, 'score'> {
+  const commitsPoints   = contributor.commits.length * SCORE_WEIGHTS.perCommit
+  const prsPoints       = contributor.prs.length * SCORE_WEIGHTS.perPR
+  const workItemsPoints = contributor.workItems.length * SCORE_WEIGHTS.perWorkItem
+
+  // Guard rail 1 — clip effort input before it enters the score.
+  // Anything beyond 150% of expected hours contributes nothing extra,
+  // so fabricated/erroneous over-logging can't inflate the score.
+  const effortCeiling  = expectedHours * 1.5
+  const clippedEffort  = Math.min(contributor.totalEffortHours, effortCeiling)
+  const effortPoints   = clippedEffort * SCORE_WEIGHTS.perEffortHour
+
+  // Guard rail 2 — working-hours anomalies get a severity-scaled
+  // penalty instead of the flat per-anomaly cost, so a wildly
+  // over-logged total is punished proportionally to how extreme it is.
+  let anomalyPoints = 0
+  for (const item of anomalyItems) {
+    if (item.type === 'working_hours' && contributor.totalEffortHours > expectedHours) {
+      const overagePercent = (contributor.totalEffortHours / expectedHours) * 100
+      anomalyPoints -= Math.min(overagePercent * 0.5, 400)
+    } else {
+      anomalyPoints += SCORE_WEIGHTS.perAnomaly
+    }
+  }
+
+  const rawScore = commitsPoints + prsPoints + workItemsPoints + effortPoints + anomalyPoints
+
+  return { commitsPoints, prsPoints, workItemsPoints, effortPoints, anomalyPoints, rawScore }
+}
+
+export function normaliseScores(
+  rawScores: number[]
+): number[] {
+  const maxRaw = Math.max(...rawScores, 1) // avoid divide-by-zero
+  return rawScores.map(raw => {
+    const normalised = (Math.max(raw, 0) / maxRaw) * 100
+    return Math.round(Math.min(100, Math.max(0, normalised)))
+  })
 }

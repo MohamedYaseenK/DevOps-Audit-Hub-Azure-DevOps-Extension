@@ -1,9 +1,17 @@
 // Developer shape used across all components
 export interface Developer {
-  id:          string
-  name:        string
-  email:       string
-  imageUrl?:   string
+  id:    string
+  name:  string
+  email: string
+  score?: number
+  scoreBreakdown?: {
+    commitsPoints:   number
+    prsPoints:       number
+    workItemsPoints: number
+    effortPoints:    number
+    anomalyPoints:   number
+    rawScore:        number
+  }
 }
 
 // Work item from ADO REST API
